@@ -28,6 +28,7 @@ library(doParallel) # For parallel processing
 library(raster)
 library(terra)
 library(sf)
+library(patchwork)
 
 ```
 
@@ -1217,6 +1218,214 @@ rm(list=c("OISST_DF1","OISST_DF2","OISST_DF3","OISST_sub_dl","shp","maxmin","bbo
           "DF1","DF2","DF3","DF12","DF123"))
 
 gc()
+
+
+
+```
+
+
+```{r}
+
+bear<-readRDS("Bear_Peninsula.Rds")
+brown<-readRDS("Brownson_Island.Rds")
+bryan<-readRDS("Bryan_Coast.Rds")
+cape<-readRDS("Cape_Gates.Rds")
+novi<-readRDS("Noville_Peninsula.Rds")
+
+pfro<-readRDS("Pfrogner_Point.Rds")
+roth<-readRDS("Rothschild_Island.Rds")
+smyl<-readRDS("Smyley_Island.Rds")
+thur<-readRDS("Thurston_Glacier.Rds")
+verd<-readRDS("Verdi_Inlet.Rds")
+
+
+
+bear$site=c("BEAR")
+brown$site=c("BROW")
+bryan$site=c("BRYA")
+cape$site=c("CAPE")
+novi$site=c("NOVI")
+
+pfro$site=c("PFRO")
+roth$site=c("ROTH")
+smyl$site=c("SMYL")
+thur$site=c("THUR")
+verd$site=c("VERD")
+
+
+all<-rbind(bear,brown,bryan,cape,novi,pfro,roth,smyl,thur,verd)
+
+all$Year<-year(all$t)
+all$quarter<-quarter(all$t)
+all$Season[all$quarter=="1"]<-"JFM"
+all$Season[all$quarter=="2"]<-"AMJ"
+all$Season[all$quarter=="3"]<-"JAS"
+all$Season[all$quarter=="4"]<-"OND"
+
+
+
+allm<-plyr::ddply(all, c("Year","Season","site"), summarise,
+            mean=na.omit(mean(sicMean)),
+            min=na.omit(mean(sicMin)),
+            max=na.omit(mean(sicMax)),
+            sd=na.omit(mean(sicSD)))
+summary(allm)
+
+ggplot(subset(allm,Season=="JFM"), aes(Year,min))+
+  geom_smooth(se=F)+
+    geom_point()+theme_bw()+ggtitle("a. Summer")+ylab("Sea Ice cover")+
+  xlim(2010,2023)+
+
+ggplot(subset(allm,Season=="AMJ"), aes(Year,min))+
+ geom_smooth(se=F)+
+    geom_point()+theme_bw()+ggtitle("b. Autumn")+ylab("Sea Ice cover")+
+   xlim(2010,2023)+
+
+  ggplot(subset(allm,Season=="JAS"), aes(Year,min))+
+ geom_smooth(se=F)+
+    geom_point(method="lm",se=F)+theme_bw()+ggtitle("c. Winter")+ylab("Sea Ice cover")+
+   xlim(2010,2023)+
+
+ggplot(subset(allm,Season=="OND"), aes(Year,min))+
+  geom_smooth(se=F)+
+    geom_point()+theme_bw()+ggtitle("d. Spring")+ylab("Sea Ice cover")+
+   xlim(2010,2023)
+
+
+
+
+``` 
+
+
+
+###----------- calculating marine heatwaves-------------
+
+
+```{r,echo=FALSE}
+
+library(heatwaveR)
+
+
+### calculate thresholds from climatology
+
+
+
+
+# SICMin thresholds
+
+sicMean01 <- ts2clm(data = bear, 
+                     y = sicMean, climatologyPeriod = c("1985-01-01", "2023-05-30"), pctile = 20)
+sicMean02 <- ts2clm(data = brown, 
+                     y = sicMean, climatologyPeriod = c("1986-01-01", "2023-05-30"), pctile = 20)
+sicMean03 <- ts2clm(data = bryan, 
+                     y = sicMean, climatologyPeriod = c("1985-01-01", "2023-05-30"), pctile = 20)
+
+sicMean04 <- ts2clm(data = cape, 
+                     y = sicMean, climatologyPeriod = c("1985-01-01", "2023-05-30"), pctile = 20)
+sicMean05 <- ts2clm(data = novi, 
+                     y = sicMean, climatologyPeriod = c("1985-01-01", "2023-05-30"), pctile = 20)
+sicMean06 <- ts2clm(data = pfro, 
+                     y = sicMean, climatologyPeriod = c("1985-01-01", "2023-05-30"), pctile = 20)
+
+sicMean07 <- ts2clm(data = roth, 
+                     y = sicMean, climatologyPeriod = c("1985-01-01", "2023-05-30"), pctile = 20)
+
+sicMean08 <- ts2clm(data = smyl, 
+                     y = sicMean, climatologyPeriod = c("1985-01-01", "2023-05-30"), pctile = 20)
+sicMean09 <- ts2clm(data = thur, 
+                     y = sicMean, climatologyPeriod = c("1985-01-01", "2023-05-30"), pctile = 20)
+sicMean10 <- ts2clm(data = verd, 
+                     y = sicMean, climatologyPeriod = c("1985-01-01", "2023-05-30"), pctile = 20)
+
+
+
+#DETECT alldfS
+
+
+sic01 <- detect_event(data = sicMean01, y = sicMean,minDuration = 3,maxGap = 7,coldSpells = T) 
+sic02 <- detect_event(data = sicMean02, y = sicMean,minDuration = 3,maxGap = 7,coldSpells = T) 
+sic03 <- detect_event(data = sicMean03, y = sicMean,minDuration = 3,maxGap = 7,coldSpells = T) 
+sic04 <- detect_event(data = sicMean04, y = sicMean,minDuration = 3,maxGap = 7,coldSpells = T) 
+sic05 <- detect_event(data = sicMean05, y = sicMean,minDuration = 3,maxGap = 7,coldSpells = T) 
+sic06 <- detect_event(data = sicMean06, y = sicMean,minDuration = 3,maxGap = 7,coldSpells = T) 
+sic07 <- detect_event(data = sicMean07, y = sicMean,minDuration = 3,maxGap = 7,coldSpells = T) 
+sic08 <- detect_event(data = sicMean08, y = sicMean,minDuration = 3,maxGap = 7,coldSpells = T) 
+sic09 <- detect_event(data = sicMean09, y = sicMean,minDuration = 3,maxGap = 7,coldSpells = T) 
+sic10 <- detect_event(data = sicMean10, y = sicMean,minDuration = 3,maxGap = 7,coldSpells = T) 
+
+
+summary(shpdf$site_id)
+
+sites<-shpdf[1:5]
+
+sdf01<-data.frame(sic01$climatology,site_id=c("BEAR")) 
+sdf02<-data.frame(sic02$climatology,site_id=c("BSON")) 
+sdf03<-data.frame(sic03$climatology,site_id=c("BRYA")) 
+sdf04<-data.frame(sic04$climatology,site_id=c("GATE")) 
+sdf05<-data.frame(sic05$climatology,site_id=c("NOVI")) 
+
+sdf06<-data.frame(sic06$climatology,site_id=c("PFRO")) 
+sdf07<-data.frame(sic07$climatology,site_id=c("ROTS")) 
+sdf08<-data.frame(sic08$climatology,site_id=c("SMYL")) 
+sdf09<-data.frame(sic09$climatology,site_id=c("THUR")) 
+sdf10<-data.frame(sic10$climatology,site_id=c("VERD")) 
+
+
+
+clim<-rbind(sdf01,sdf02,sdf03,sdf04,sdf05,
+              sdf06,sdf07,sdf08,sdf09,sdf10)
+
+
+climS<-merge(clim,sites,by="site_id")
+
+
+# Set category fill colours
+fillColCat2 <- c(
+  "Moderate" = "#ffc866",
+  "Normal" = "#85B7CC"
+  )
+
+lineColCat2 <- c(
+  "Sea Ice" = "black",
+  "Climatology" = "blue3",
+  "Threshold" = "red3"
+  )
+
+climS$diff = climS$thresh - climS$seas
+climS$thresh_2x = climS$thresh + climS$diff
+climS$thresh_3x = climS$thresh_2x + climS$diff
+climS$thresh_4x = climS$thresh_3x + climS$diff
+
+sites$site_name
+
+climS$site_id<-factor(climS$site_id,levels=c("ROTS","VERD","SMYL","BRYA","PFRO","NOVI",
+                                             "BSON","BEAR","GATE","THUR"))
+
+
+climS$site_name<-factor(climS$site_name,levels=c("Rothschild Island","Verdi Inlet",
+                                             "Smyley","Bryan Coast","Pfrogner Point",
+                                             "Noville Peninsula", "Brownson Islands",
+                                             "Bear Peninsula","Cape Gates",
+                                             "Thurston Glacier, Mount Siple"))
+
+
+(ggplot(data = subset(climS,t>'2021-12-31'), aes(x = t, y = sicMean)) +
+     geom_flame(aes(y = sicMean,y2=thresh, fill = "Normal")) +
+     geom_flame(aes(y = thresh,y2=sicMean, fill = "Moderate")) +
+     geom_line(aes(y = seas, col = "Climatology"), size = 0.7,linetype="dashed") +
+     geom_line(aes(y = thresh, col = "Threshold"), size = 0.7,linetype="dotdash") +
+     geom_line(aes(y = sicMean, col = "Sea Ice"), size = 0.6) +
+     scale_colour_manual(name = NULL, values = lineColCat2,
+                         breaks = c("Sea Ice", "Climatology","Threshold")) +
+     scale_fill_manual(name = NULL, values = fillColCat2, guide = FALSE) +
+     scale_x_date(date_labels = "%b %Y") +
+     guides(colour = guide_legend(override.aes = list(linetype = c("solid","dashed",
+                                                                   "dotdash")))) +
+     labs(y = "Sea ice cover [fraction]", x = NULL)+
+     facet_wrap(site_name~.,ncol=2,nrow=5)+theme_bw()+theme(panel.spacing.x = unit(2, "lines")))
+
+
+
 
 
 
