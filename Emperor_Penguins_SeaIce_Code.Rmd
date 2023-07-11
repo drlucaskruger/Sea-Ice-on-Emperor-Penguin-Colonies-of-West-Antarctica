@@ -1,0 +1,1497 @@
+---
+title: Detection of extreme low sea ice cover in the West Antarctica for 10 colonies of Emperor Penguins
+author: "Lucas Krüger"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#---------- Download NOAA erddap optimum interpolation SST----
+
+#this part of the script is a modification of the scripts in the heatwaveR vignette
+#available at https://robwschlegel.github.io/heatwaveR/articles/OISST_preparation.html
+
+
+```{r, echo =FALSE}
+#---------- Download NOAA erdap optimum interpolation SST----
+
+# The packages we will use
+library(dplyr) # A staple for modern data management in R
+library(lubridate) # Useful functions for dealing with dates
+library(ggplot2) # The preferred library for data visualisation
+library(tidync) # For easily dealing with NetCDF data
+library(rerddap) # For easily downloading subsets of data
+library(doParallel) # For parallel processing
+library(raster)
+library(terra)
+library(sf)
+library(patchwork)
+
+```
+
+# The information for the NOAA OISST data
+
+```{r, echo=FALSE}
+
+
+rerddap::info(datasetid = "ncdcOisst21Agg_LonPM180", url = "https://coastwatch.pfeg.noaa.gov/erddap/")
+
+```
+
+# This function downloads and prepares data based on user provided start and end dates using three different requests, as my PC did not have memory enough to run on a single request.
+
+```{r}
+
+
+# spatial units to use
+
+shp<-shapefile("D:/Emperors/Colonies_50km_buffer.shp")
+plot(shp)
+
+crs=CRS( "+proj=longlat +datum=WGS84 +no_defs") # coordinate reference system CRS
+#load antarctic peninsula shapefile to plot it
+# this shapefile was cut from high resolution file from the SCAR Antarctic Digital Database, 2023
+# Gerrish, L., Ireland, L., Fretwell, P., & Cooper, P. (2023). High resolution vector polygons of the Antarctic coastline (7.7) [Data set]. UK Polar Data Centre, Natural Environment Research Council, UK Research & Innovation. https://doi.org/10.5285/0be5339c-9d35-44c9-a10f-da4b5356840b'
+
+wap<-shapefile("D:/Emperors/Antarctica_WGS84.shp") 
+
+
+# plot map with shapefile (Fig 1)
+shpdf<-data.frame(shp)
+
+ggplot()+
+  
+  xlab("Longitude")+ylab("Latitude")+
+  theme_bw()+geom_polygon(data=wap,aes(x = long, y = lat, group = group))+
+    geom_polygon(data=shp,aes(x = long, y = lat, group = group,label=group),fill="lightblue",colour="black")+
+  
+geom_text(data=shpdf,aes(label=site_id, 
+            x=longitude_,
+            y=latitude_e),colour="red2",
+            size = 3, hjust=0, vjust=-1) +
+      coord_quickmap(xlim=c(-130,-65),ylim=c(-76, -59), expand = TRUE, clip = "on")
+
+(shp$site_id)
+
+shp.sf<-st_as_sf(shp)
+
+unique(shp.sf$site_id)
+
+#Extract coordinates and generates a bounding box 
+
+geom<-st_geometry(shp.sf)
+
+bbox_list <- lapply(st_geometry(shp.sf), st_bbox)
+
+#min and max coordinates of each strata as data frame
+
+df01<-data.frame(t(as.data.frame((bbox_list[[1]])))) 
+df02<-data.frame(t(as.data.frame((bbox_list[[2]])))) 
+df03<-data.frame(t(as.data.frame((bbox_list[[3]])))) 
+df04<-data.frame(t(as.data.frame((bbox_list[[4]])))) 
+df05<-data.frame(t(as.data.frame((bbox_list[[5]])))) 
+df06<-data.frame(t(as.data.frame((bbox_list[[6]])))) 
+df07<-data.frame(t(as.data.frame((bbox_list[[7]])))) 
+df08<-data.frame(t(as.data.frame((bbox_list[[8]])))) 
+df09<-data.frame(t(as.data.frame((bbox_list[[9]]))))
+df10<-data.frame(t(as.data.frame((bbox_list[[10]])))) 
+
+
+```
+#download and process data for Bear Peninsula
+
+```{r, echo=FALSE}
+
+unique(shp.sf$site_id[1])
+
+OISST_sub_dl <- function(time_df){
+  OISST_DATA1 <- rerddap::griddap(datasetx = "ncdcOisst21Agg_LonPM180",
+                                url = "https://coastwatch.pfeg.noaa.gov/erddap/", 
+                                time = c(time_df$start, time_df$end), 
+                                zlev = c(0, 0),
+                                latitude = c(min(df01$ymin),max(df01$ymax)), 
+                                longitude = c(min(df01$xmin),max(df01$xmax)),
+                                fields = c("sst","ice"))$data %>% 
+    dplyr::mutate(time = base::as.Date(stringr::str_remove(time, "T12:00:00Z"))) %>% 
+    dplyr::rename(t = time, temp = sst, sic=ice,lon = longitude, lat = latitude) %>% 
+    dplyr::select(lon, lat, t, temp,sic) %>% 
+    stats::na.omit()
+}
+
+
+
+
+dl_years1 <- data.frame(date_index = 1:3,
+                        start = as.Date(c("1985-01-01","1990-01-01","1995-01-01")),
+                        
+                        end = as.Date(c("1989-12-31","1994-12-31","1999-12-31")))
+
+
+dl_years2 <- data.frame(date_index = 1:3,
+                        start = as.Date(c("2000-01-01", "2005-01-01", "2010-01-01")),
+                        
+                        end = as.Date(c("2004-12-31", "2009-12-31","2014-12-31")))
+
+
+dl_years3 <- data.frame(date_index = 1:3,
+                        start = as.Date(c("2015-01-01","2020-01-01","2021-01-01")),
+                        
+                        end = as.Date(c("2019-12-31","2020-12-31","2023-06-21")))
+
+
+###download and save data
+
+
+base::system.time(
+  OISST_DF1 <- dl_years1 %>% 
+    dplyr::group_by(date_index) %>% 
+    dplyr::group_modify(~OISST_sub_dl(.x)) %>% 
+    dplyr::ungroup() %>% 
+    dplyr::select(lon, lat, t, temp,sic)
+) 
+
+
+base::system.time(
+  OISST_DF2 <- dl_years2 %>% 
+    dplyr::group_by(date_index) %>% 
+    dplyr::group_modify(~OISST_sub_dl(.x)) %>% 
+    dplyr::ungroup() %>% 
+    dplyr::select(lon, lat, t, temp,sic)
+)
+
+
+base::system.time(
+  OISST_DF3 <- dl_years3 %>% 
+    dplyr::group_by(date_index) %>% 
+    dplyr::group_modify(~OISST_sub_dl(.x)) %>% 
+    dplyr::ungroup() %>% 
+    dplyr::select(lon, lat, t, temp,sic)
+)
+
+base::saveRDS(OISST_DF1, file = "OISST_BEAR1.Rds")
+base::saveRDS(OISST_DF2, file = "OISST_BEAR2.Rds")
+base::saveRDS(OISST_DF3, file = "OISST_BEAR3.Rds")
+
+### summarize data per day
+
+DF1<-plyr::ddply(OISST_DF1, c("t"), summarise,
+            tSD=sd(temp),tMax=max(temp),
+            tMin=min(temp),temp=mean(temp),
+            sicMean=mean(sic),sicMax=max(sic),
+            sicMin=min(sic),sicSD=sd(sic))
+
+DF2<-plyr::ddply(OISST_DF2, c("t"), summarise,
+            tSD=sd(temp),tMax=max(temp),
+            tMin=min(temp),temp=mean(temp),
+            sicMean=mean(sic),sicMax=max(sic),
+            sicMin=min(sic),sicSD=sd(sic))
+
+DF3<-plyr::ddply(OISST_DF3, c("t"), summarise,
+            tSD=sd(temp),tMax=max(temp),
+            tMin=min(temp),temp=mean(temp),
+            sicMean=mean(sic),sicMax=max(sic),
+            sicMin=min(sic),sicSD=sd(sic))
+
+### merge data
+
+DF12<-rbind(DF1,DF2)
+DF123<-rbind(DF12,DF3)
+
+base::saveRDS(DF123, file = "Bear_Peninsula.Rds")
+
+#remove data and release unused memory
+
+rm(list=c("OISST_DF1","OISST_DF2","OISST_DF3","OISST_sub_dl","shp","maxmin","bbox_list",
+          "DF1","DF2","DF3","DF12","DF123"))
+
+gc()
+
+
+
+```
+
+
+#download and process data for Brow nson Islands
+
+```{r, echo=FALSE}
+
+unique(shp.sf$site_id[2])
+
+OISST_sub_dl <- function(time_df){
+  OISST_DATA1 <- rerddap::griddap(datasetx = "ncdcOisst21Agg_LonPM180",
+                                url = "https://coastwatch.pfeg.noaa.gov/erddap/", 
+                                time = c(time_df$start, time_df$end), 
+                                zlev = c(0, 0),
+                                latitude = c(min(df02$ymin),max(df02$ymax)), 
+                                longitude = c(min(df02$xmin),max(df02$xmax)),
+                                fields = c("sst","ice"))$data %>% 
+    dplyr::mutate(time = base::as.Date(stringr::str_remove(time, "T12:00:00Z"))) %>% 
+    dplyr::rename(t = time, temp = sst, sic=ice,lon = longitude, lat = latitude) %>% 
+    dplyr::select(lon, lat, t, temp,sic) %>% 
+    stats::na.omit()
+}
+
+
+
+
+dl_years1 <- data.frame(date_index = 1:3,
+                        start = as.Date(c("1985-01-01","1990-01-01","1995-01-01")),
+                        
+                        end = as.Date(c("1989-12-31","1994-12-31","1999-12-31")))
+
+
+dl_years2 <- data.frame(date_index = 1:3,
+                        start = as.Date(c("2000-01-01", "2005-01-01", "2010-01-01")),
+                        
+                        end = as.Date(c("2004-12-31", "2009-12-31","2014-12-31")))
+
+
+dl_years3 <- data.frame(date_index = 1:3,
+                        start = as.Date(c("2015-01-01","2020-01-01","2021-01-01")),
+                        
+                        end = as.Date(c("2019-12-31","2020-12-31","2023-06-20")))
+
+
+###download and save data
+
+
+base::system.time(
+  OISST_DF1 <- dl_years1 %>% 
+    dplyr::group_by(date_index) %>% 
+    dplyr::group_modify(~OISST_sub_dl(.x)) %>% 
+    dplyr::ungroup() %>% 
+    dplyr::select(lon, lat, t, temp,sic)
+) 
+
+
+base::system.time(
+  OISST_DF2 <- dl_years2 %>% 
+    dplyr::group_by(date_index) %>% 
+    dplyr::group_modify(~OISST_sub_dl(.x)) %>% 
+    dplyr::ungroup() %>% 
+    dplyr::select(lon, lat, t, temp,sic)
+)
+
+
+base::system.time(
+  OISST_DF3 <- dl_years3 %>% 
+    dplyr::group_by(date_index) %>% 
+    dplyr::group_modify(~OISST_sub_dl(.x)) %>% 
+    dplyr::ungroup() %>% 
+    dplyr::select(lon, lat, t, temp,sic)
+)
+
+base::saveRDS(OISST_DF1, file = "OISST_BROWN1.Rds")
+base::saveRDS(OISST_DF2, file = "OISST_BROWN2.Rds")
+base::saveRDS(OISST_DF3, file = "OISST_BROWN3.Rds")
+
+### summarize data per day
+
+DF1<-plyr::ddply(OISST_DF1, c("t"), summarise,
+            tSD=sd(temp),tMax=max(temp),
+            tMin=min(temp),temp=mean(temp),
+            sicMean=mean(sic),sicMax=max(sic),
+            sicMin=min(sic),sicSD=sd(sic))
+
+DF2<-plyr::ddply(OISST_DF2, c("t"), summarise,
+            tSD=sd(temp),tMax=max(temp),
+            tMin=min(temp),temp=mean(temp),
+            sicMean=mean(sic),sicMax=max(sic),
+            sicMin=min(sic),sicSD=sd(sic))
+
+DF3<-plyr::ddply(OISST_DF3, c("t"), summarise,
+            tSD=sd(temp),tMax=max(temp),
+            tMin=min(temp),temp=mean(temp),
+            sicMean=mean(sic),sicMax=max(sic),
+            sicMin=min(sic),sicSD=sd(sic))
+
+### merge data
+
+DF12<-rbind(DF1,DF2)
+DF123<-rbind(DF12,DF3)
+
+base::saveRDS(DF123, file = "Brownson_Island.Rds")
+
+#remove data and release unused memory
+
+rm(list=c("OISST_DF1","OISST_DF2","OISST_DF3","OISST_sub_dl","shp","maxmin","bbox_list",
+          "DF1","DF2","DF3","DF12","DF123"))
+
+gc()
+
+
+
+```
+
+#download and process data for Bryan Coast
+
+```{r, echo=FALSE}
+
+unique(shp.sf$site_id[3])
+
+OISST_sub_dl <- function(time_df){
+  OISST_DATA1 <- rerddap::griddap(datasetx = "ncdcOisst21Agg_LonPM180",
+                                url = "https://coastwatch.pfeg.noaa.gov/erddap/", 
+                                time = c(time_df$start, time_df$end), 
+                                zlev = c(0, 0),
+                                latitude = c(min(df03$ymin),max(df03$ymax)), 
+                                longitude = c(min(df03$xmin),max(df03$xmax)),
+                                fields = c("sst","ice"))$data %>% 
+    dplyr::mutate(time = base::as.Date(stringr::str_remove(time, "T12:00:00Z"))) %>% 
+    dplyr::rename(t = time, temp = sst, sic=ice,lon = longitude, lat = latitude) %>% 
+    dplyr::select(lon, lat, t, temp,sic) %>% 
+    stats::na.omit()
+}
+
+
+
+
+dl_years1 <- data.frame(date_index = 1:3,
+                        start = as.Date(c("1985-01-01","1990-01-01","1995-01-01")),
+                        
+                        end = as.Date(c("1989-12-31","1994-12-31","1999-12-31")))
+
+
+dl_years2 <- data.frame(date_index = 1:3,
+                        start = as.Date(c("2000-01-01", "2005-01-01", "2010-01-01")),
+                        
+                        end = as.Date(c("2004-12-31", "2009-12-31","2014-12-31")))
+
+
+dl_years3 <- data.frame(date_index = 1:3,
+                        start = as.Date(c("2015-01-01","2020-01-01","2021-01-01")),
+                        
+                        end = as.Date(c("2019-12-31","2020-12-31","2023-06-20")))
+
+
+###download and save data
+
+
+base::system.time(
+  OISST_DF1 <- dl_years1 %>% 
+    dplyr::group_by(date_index) %>% 
+    dplyr::group_modify(~OISST_sub_dl(.x)) %>% 
+    dplyr::ungroup() %>% 
+    dplyr::select(lon, lat, t, temp,sic)
+) 
+
+
+base::system.time(
+  OISST_DF2 <- dl_years2 %>% 
+    dplyr::group_by(date_index) %>% 
+    dplyr::group_modify(~OISST_sub_dl(.x)) %>% 
+    dplyr::ungroup() %>% 
+    dplyr::select(lon, lat, t, temp,sic)
+)
+
+
+base::system.time(
+  OISST_DF3 <- dl_years3 %>% 
+    dplyr::group_by(date_index) %>% 
+    dplyr::group_modify(~OISST_sub_dl(.x)) %>% 
+    dplyr::ungroup() %>% 
+    dplyr::select(lon, lat, t, temp,sic)
+)
+
+base::saveRDS(OISST_DF1, file = "OISST_BRYAN1.Rds")
+base::saveRDS(OISST_DF2, file = "OISST_BRYAN2.Rds")
+base::saveRDS(OISST_DF3, file = "OISST_BRYAN3.Rds")
+
+### summarize data per day
+
+DF1<-plyr::ddply(OISST_DF1, c("t"), summarise,
+            tSD=sd(temp),tMax=max(temp),
+            tMin=min(temp),temp=mean(temp),
+            sicMean=mean(sic),sicMax=max(sic),
+            sicMin=min(sic),sicSD=sd(sic))
+
+DF2<-plyr::ddply(OISST_DF2, c("t"), summarise,
+            tSD=sd(temp),tMax=max(temp),
+            tMin=min(temp),temp=mean(temp),
+            sicMean=mean(sic),sicMax=max(sic),
+            sicMin=min(sic),sicSD=sd(sic))
+
+DF3<-plyr::ddply(OISST_DF3, c("t"), summarise,
+            tSD=sd(temp),tMax=max(temp),
+            tMin=min(temp),temp=mean(temp),
+            sicMean=mean(sic),sicMax=max(sic),
+            sicMin=min(sic),sicSD=sd(sic))
+
+### merge data
+
+DF12<-rbind(DF1,DF2)
+DF123<-rbind(DF12,DF3)
+
+base::saveRDS(DF123, file = "Bryan_Coast.Rds")
+
+#remove data and release unused memory
+
+rm(list=c("OISST_DF1","OISST_DF2","OISST_DF3","OISST_sub_dl","shp","maxmin","bbox_list",
+          "DF1","DF2","DF3","DF12","DF123"))
+
+gc()
+
+
+
+```
+
+#download and process data for Cape Gates
+
+```{r, echo=FALSE}
+
+unique(shp.sf$site_id[4])
+
+OISST_sub_dl <- function(time_df){
+  OISST_DATA1 <- rerddap::griddap(datasetx = "ncdcOisst21Agg_LonPM180",
+                                url = "https://coastwatch.pfeg.noaa.gov/erddap/", 
+                                time = c(time_df$start, time_df$end), 
+                                zlev = c(0, 0),
+                                latitude = c(min(df04$ymin),max(df04$ymax)), 
+                                longitude = c(min(df04$xmin),max(df04$xmax)),
+                                fields = c("sst","ice"))$data %>% 
+    dplyr::mutate(time = base::as.Date(stringr::str_remove(time, "T12:00:00Z"))) %>% 
+    dplyr::rename(t = time, temp = sst, sic=ice,lon = longitude, lat = latitude) %>% 
+    dplyr::select(lon, lat, t, temp,sic) %>% 
+    stats::na.omit()
+}
+
+
+
+
+dl_years1 <- data.frame(date_index = 1:3,
+                        start = as.Date(c("1985-01-01","1990-01-01","1995-01-01")),
+                        
+                        end = as.Date(c("1989-12-31","1994-12-31","1999-12-31")))
+
+
+dl_years2 <- data.frame(date_index = 1:3,
+                        start = as.Date(c("2000-01-01", "2005-01-01", "2010-01-01")),
+                        
+                        end = as.Date(c("2004-12-31", "2009-12-31","2014-12-31")))
+
+
+dl_years3 <- data.frame(date_index = 1:3,
+                        start = as.Date(c("2015-01-01","2020-01-01","2021-01-01")),
+                        
+                        end = as.Date(c("2019-12-31","2020-12-31","2023-06-20")))
+
+
+###download and save data
+
+
+base::system.time(
+  OISST_DF1 <- dl_years1 %>% 
+    dplyr::group_by(date_index) %>% 
+    dplyr::group_modify(~OISST_sub_dl(.x)) %>% 
+    dplyr::ungroup() %>% 
+    dplyr::select(lon, lat, t, temp,sic)
+) 
+
+
+base::system.time(
+  OISST_DF2 <- dl_years2 %>% 
+    dplyr::group_by(date_index) %>% 
+    dplyr::group_modify(~OISST_sub_dl(.x)) %>% 
+    dplyr::ungroup() %>% 
+    dplyr::select(lon, lat, t, temp,sic)
+)
+
+
+base::system.time(
+  OISST_DF3 <- dl_years3 %>% 
+    dplyr::group_by(date_index) %>% 
+    dplyr::group_modify(~OISST_sub_dl(.x)) %>% 
+    dplyr::ungroup() %>% 
+    dplyr::select(lon, lat, t, temp,sic)
+)
+
+base::saveRDS(OISST_DF1, file = "OISST_CAPE1.Rds")
+base::saveRDS(OISST_DF2, file = "OISST_CAPE2.Rds")
+base::saveRDS(OISST_DF3, file = "OISST_CAPE3.Rds")
+
+### summarize data per day
+
+DF1<-plyr::ddply(OISST_DF1, c("t"), summarise,
+            tSD=sd(temp),tMax=max(temp),
+            tMin=min(temp),temp=mean(temp),
+            sicMean=mean(sic),sicMax=max(sic),
+            sicMin=min(sic),sicSD=sd(sic))
+
+DF2<-plyr::ddply(OISST_DF2, c("t"), summarise,
+            tSD=sd(temp),tMax=max(temp),
+            tMin=min(temp),temp=mean(temp),
+            sicMean=mean(sic),sicMax=max(sic),
+            sicMin=min(sic),sicSD=sd(sic))
+
+DF3<-plyr::ddply(OISST_DF3, c("t"), summarise,
+            tSD=sd(temp),tMax=max(temp),
+            tMin=min(temp),temp=mean(temp),
+            sicMean=mean(sic),sicMax=max(sic),
+            sicMin=min(sic),sicSD=sd(sic))
+
+### merge data
+
+DF12<-rbind(DF1,DF2)
+DF123<-rbind(DF12,DF3)
+
+base::saveRDS(DF123, file = "Cape_Gates.Rds")
+
+#remove data and release unused memory
+
+rm(list=c("OISST_DF1","OISST_DF2","OISST_DF3","OISST_sub_dl","shp","maxmin","bbox_list",
+          "DF1","DF2","DF3","DF12","DF123"))
+
+gc()
+
+
+
+```
+
+#download and process data for Noville Peninsula
+
+```{r, echo=FALSE}
+
+unique(shp.sf$site_id[5])
+
+OISST_sub_dl <- function(time_df){
+  OISST_DATA1 <- rerddap::griddap(datasetx = "ncdcOisst21Agg_LonPM180",
+                                url = "https://coastwatch.pfeg.noaa.gov/erddap/", 
+                                time = c(time_df$start, time_df$end), 
+                                zlev = c(0, 0),
+                                latitude = c(min(df05$ymin),max(df05$ymax)), 
+                                longitude = c(min(df05$xmin),max(df05$xmax)),
+                                fields = c("sst","ice"))$data %>% 
+    dplyr::mutate(time = base::as.Date(stringr::str_remove(time, "T12:00:00Z"))) %>% 
+    dplyr::rename(t = time, temp = sst, sic=ice,lon = longitude, lat = latitude) %>% 
+    dplyr::select(lon, lat, t, temp,sic) %>% 
+    stats::na.omit()
+}
+
+
+
+
+dl_years1 <- data.frame(date_index = 1:3,
+                        start = as.Date(c("1985-01-01","1990-01-01","1995-01-01")),
+                        
+                        end = as.Date(c("1989-12-31","1994-12-31","1999-12-31")))
+
+
+dl_years2 <- data.frame(date_index = 1:3,
+                        start = as.Date(c("2000-01-01", "2005-01-01", "2010-01-01")),
+                        
+                        end = as.Date(c("2004-12-31", "2009-12-31","2014-12-31")))
+
+
+dl_years3 <- data.frame(date_index = 1:3,
+                        start = as.Date(c("2015-01-01","2020-01-01","2021-01-01")),
+                        
+                        end = as.Date(c("2019-12-31","2020-12-31","2023-06-20")))
+
+
+###download and save data
+
+
+base::system.time(
+  OISST_DF1 <- dl_years1 %>% 
+    dplyr::group_by(date_index) %>% 
+    dplyr::group_modify(~OISST_sub_dl(.x)) %>% 
+    dplyr::ungroup() %>% 
+    dplyr::select(lon, lat, t, temp,sic)
+) 
+
+
+base::system.time(
+  OISST_DF2 <- dl_years2 %>% 
+    dplyr::group_by(date_index) %>% 
+    dplyr::group_modify(~OISST_sub_dl(.x)) %>% 
+    dplyr::ungroup() %>% 
+    dplyr::select(lon, lat, t, temp,sic)
+)
+
+
+base::system.time(
+  OISST_DF3 <- dl_years3 %>% 
+    dplyr::group_by(date_index) %>% 
+    dplyr::group_modify(~OISST_sub_dl(.x)) %>% 
+    dplyr::ungroup() %>% 
+    dplyr::select(lon, lat, t, temp,sic)
+)
+
+base::saveRDS(OISST_DF1, file = "OISST_NOV1.Rds")
+base::saveRDS(OISST_DF2, file = "OISST_NOV2.Rds")
+base::saveRDS(OISST_DF3, file = "OISST_NOV3.Rds")
+
+### summarize data per day
+
+DF1<-plyr::ddply(OISST_DF1, c("t"), summarise,
+            tSD=sd(temp),tMax=max(temp),
+            tMin=min(temp),temp=mean(temp),
+            sicMean=mean(sic),sicMax=max(sic),
+            sicMin=min(sic),sicSD=sd(sic))
+
+DF2<-plyr::ddply(OISST_DF2, c("t"), summarise,
+            tSD=sd(temp),tMax=max(temp),
+            tMin=min(temp),temp=mean(temp),
+            sicMean=mean(sic),sicMax=max(sic),
+            sicMin=min(sic),sicSD=sd(sic))
+
+DF3<-plyr::ddply(OISST_DF3, c("t"), summarise,
+            tSD=sd(temp),tMax=max(temp),
+            tMin=min(temp),temp=mean(temp),
+            sicMean=mean(sic),sicMax=max(sic),
+            sicMin=min(sic),sicSD=sd(sic))
+
+### merge data
+
+DF12<-rbind(DF1,DF2)
+DF123<-rbind(DF12,DF3)
+
+base::saveRDS(DF123, file = "Noville_Peninsula.Rds")
+
+#remove data and release unused memory
+
+rm(list=c("OISST_DF1","OISST_DF2","OISST_DF3","OISST_sub_dl","shp","maxmin","bbox_list",
+          "DF1","DF2","DF3","DF12","DF123"))
+
+gc()
+
+
+
+```
+
+#download and process data for Pfrogner Point
+
+```{r, echo=FALSE}
+
+unique(shp.sf$site_id[6])
+
+OISST_sub_dl <- function(time_df){
+  OISST_DATA1 <- rerddap::griddap(datasetx = "ncdcOisst21Agg_LonPM180",
+                                url = "https://coastwatch.pfeg.noaa.gov/erddap/", 
+                                time = c(time_df$start, time_df$end), 
+                                zlev = c(0, 0),
+                                latitude = c(min(df06$ymin),max(df06$ymax)), 
+                                longitude = c(min(df06$xmin),max(df06$xmax)),
+                                fields = c("sst","ice"))$data %>% 
+    dplyr::mutate(time = base::as.Date(stringr::str_remove(time, "T12:00:00Z"))) %>% 
+    dplyr::rename(t = time, temp = sst, sic=ice,lon = longitude, lat = latitude) %>% 
+    dplyr::select(lon, lat, t, temp,sic) %>% 
+    stats::na.omit()
+}
+
+
+
+
+dl_years1 <- data.frame(date_index = 1:3,
+                        start = as.Date(c("1985-01-01","1990-01-01","1995-01-01")),
+                        
+                        end = as.Date(c("1989-12-31","1994-12-31","1999-12-31")))
+
+
+dl_years2 <- data.frame(date_index = 1:3,
+                        start = as.Date(c("2000-01-01", "2005-01-01", "2010-01-01")),
+                        
+                        end = as.Date(c("2004-12-31", "2009-12-31","2014-12-31")))
+
+
+dl_years3 <- data.frame(date_index = 1:3,
+                        start = as.Date(c("2015-01-01","2020-01-01","2021-01-01")),
+                        
+                        end = as.Date(c("2019-12-31","2020-12-31","2023-06-20")))
+
+
+###download and save data
+
+
+base::system.time(
+  OISST_DF1 <- dl_years1 %>% 
+    dplyr::group_by(date_index) %>% 
+    dplyr::group_modify(~OISST_sub_dl(.x)) %>% 
+    dplyr::ungroup() %>% 
+    dplyr::select(lon, lat, t, temp,sic)
+) 
+
+
+base::system.time(
+  OISST_DF2 <- dl_years2 %>% 
+    dplyr::group_by(date_index) %>% 
+    dplyr::group_modify(~OISST_sub_dl(.x)) %>% 
+    dplyr::ungroup() %>% 
+    dplyr::select(lon, lat, t, temp,sic)
+)
+
+
+base::system.time(
+  OISST_DF3 <- dl_years3 %>% 
+    dplyr::group_by(date_index) %>% 
+    dplyr::group_modify(~OISST_sub_dl(.x)) %>% 
+    dplyr::ungroup() %>% 
+    dplyr::select(lon, lat, t, temp,sic)
+)
+
+base::saveRDS(OISST_DF1, file = "OISST_PFRO1.Rds")
+base::saveRDS(OISST_DF2, file = "OISST_PFRO2.Rds")
+base::saveRDS(OISST_DF3, file = "OISST_PFRO3.Rds")
+
+### summarize data per day
+
+DF1<-plyr::ddply(OISST_DF1, c("t"), summarise,
+            tSD=sd(temp),tMax=max(temp),
+            tMin=min(temp),temp=mean(temp),
+            sicMean=mean(sic),sicMax=max(sic),
+            sicMin=min(sic),sicSD=sd(sic))
+
+DF2<-plyr::ddply(OISST_DF2, c("t"), summarise,
+            tSD=sd(temp),tMax=max(temp),
+            tMin=min(temp),temp=mean(temp),
+            sicMean=mean(sic),sicMax=max(sic),
+            sicMin=min(sic),sicSD=sd(sic))
+
+DF3<-plyr::ddply(OISST_DF3, c("t"), summarise,
+            tSD=sd(temp),tMax=max(temp),
+            tMin=min(temp),temp=mean(temp),
+            sicMean=mean(sic),sicMax=max(sic),
+            sicMin=min(sic),sicSD=sd(sic))
+
+### merge data
+
+DF12<-rbind(DF1,DF2)
+DF123<-rbind(DF12,DF3)
+
+base::saveRDS(DF123, file = "Pfrogner_Point.Rds")
+
+#remove data and release unused memory
+
+rm(list=c("OISST_DF1","OISST_DF2","OISST_DF3","OISST_sub_dl","shp","maxmin","bbox_list",
+          "DF1","DF2","DF3","DF12","DF123"))
+
+gc()
+
+
+
+```
+
+#download and process data for Rothschild Island
+
+```{r, echo=FALSE}
+
+unique(shp.sf$site_id[7])
+
+OISST_sub_dl <- function(time_df){
+  OISST_DATA1 <- rerddap::griddap(datasetx = "ncdcOisst21Agg_LonPM180",
+                                url = "https://coastwatch.pfeg.noaa.gov/erddap/", 
+                                time = c(time_df$start, time_df$end), 
+                                zlev = c(0, 0),
+                                latitude = c(min(df07$ymin),max(df07$ymax)), 
+                                longitude = c(min(df07$xmin),max(df07$xmax)),
+                                fields = c("sst","ice"))$data %>% 
+    dplyr::mutate(time = base::as.Date(stringr::str_remove(time, "T12:00:00Z"))) %>% 
+    dplyr::rename(t = time, temp = sst, sic=ice,lon = longitude, lat = latitude) %>% 
+    dplyr::select(lon, lat, t, temp,sic) %>% 
+    stats::na.omit()
+}
+
+
+
+
+dl_years1 <- data.frame(date_index = 1:3,
+                        start = as.Date(c("1985-01-01","1990-01-01","1995-01-01")),
+                        
+                        end = as.Date(c("1989-12-31","1994-12-31","1999-12-31")))
+
+
+dl_years2 <- data.frame(date_index = 1:3,
+                        start = as.Date(c("2000-01-01", "2005-01-01", "2010-01-01")),
+                        
+                        end = as.Date(c("2004-12-31", "2009-12-31","2014-12-31")))
+
+
+dl_years3 <- data.frame(date_index = 1:3,
+                        start = as.Date(c("2015-01-01","2020-01-01","2021-01-01")),
+                        
+                        end = as.Date(c("2019-12-31","2020-12-31","2023-06-20")))
+
+
+###download and save data
+
+
+base::system.time(
+  OISST_DF1 <- dl_years1 %>% 
+    dplyr::group_by(date_index) %>% 
+    dplyr::group_modify(~OISST_sub_dl(.x)) %>% 
+    dplyr::ungroup() %>% 
+    dplyr::select(lon, lat, t, temp,sic)
+) 
+
+
+base::system.time(
+  OISST_DF2 <- dl_years2 %>% 
+    dplyr::group_by(date_index) %>% 
+    dplyr::group_modify(~OISST_sub_dl(.x)) %>% 
+    dplyr::ungroup() %>% 
+    dplyr::select(lon, lat, t, temp,sic)
+)
+
+
+base::system.time(
+  OISST_DF3 <- dl_years3 %>% 
+    dplyr::group_by(date_index) %>% 
+    dplyr::group_modify(~OISST_sub_dl(.x)) %>% 
+    dplyr::ungroup() %>% 
+    dplyr::select(lon, lat, t, temp,sic)
+)
+
+base::saveRDS(OISST_DF1, file = "OISST_ROTH1.Rds")
+base::saveRDS(OISST_DF2, file = "OISST_ROTH2.Rds")
+base::saveRDS(OISST_DF3, file = "OISST_ROTH3.Rds")
+
+### summarize data per day
+
+DF1<-plyr::ddply(OISST_DF1, c("t"), summarise,
+            tSD=sd(temp),tMax=max(temp),
+            tMin=min(temp),temp=mean(temp),
+            sicMean=mean(sic),sicMax=max(sic),
+            sicMin=min(sic),sicSD=sd(sic))
+
+DF2<-plyr::ddply(OISST_DF2, c("t"), summarise,
+            tSD=sd(temp),tMax=max(temp),
+            tMin=min(temp),temp=mean(temp),
+            sicMean=mean(sic),sicMax=max(sic),
+            sicMin=min(sic),sicSD=sd(sic))
+
+DF3<-plyr::ddply(OISST_DF3, c("t"), summarise,
+            tSD=sd(temp),tMax=max(temp),
+            tMin=min(temp),temp=mean(temp),
+            sicMean=mean(sic),sicMax=max(sic),
+            sicMin=min(sic),sicSD=sd(sic))
+
+### merge data
+
+DF12<-rbind(DF1,DF2)
+DF123<-rbind(DF12,DF3)
+
+base::saveRDS(DF123, file = "Rothschild_Island.Rds")
+
+#remove data and release unused memory
+
+rm(list=c("OISST_DF1","OISST_DF2","OISST_DF3","OISST_sub_dl","shp","maxmin","bbox_list",
+          "DF1","DF2","DF3","DF12","DF123"))
+
+gc()
+
+
+
+```
+
+#download and process data for Smyley Island
+
+```{r, echo=FALSE}
+
+unique(shp.sf$site_id[8])
+
+OISST_sub_dl <- function(time_df){
+  OISST_DATA1 <- rerddap::griddap(datasetx = "ncdcOisst21Agg_LonPM180",
+                                url = "https://coastwatch.pfeg.noaa.gov/erddap/", 
+                                time = c(time_df$start, time_df$end), 
+                                zlev = c(0, 0),
+                                latitude = c(min(df08$ymin),max(df08$ymax)), 
+                                longitude = c(min(df08$xmin),max(df08$xmax)),
+                                fields = c("sst","ice"))$data %>% 
+    dplyr::mutate(time = base::as.Date(stringr::str_remove(time, "T12:00:00Z"))) %>% 
+    dplyr::rename(t = time, temp = sst, sic=ice,lon = longitude, lat = latitude) %>% 
+    dplyr::select(lon, lat, t, temp,sic) %>% 
+    stats::na.omit()
+}
+
+
+
+
+dl_years1 <- data.frame(date_index = 1:3,
+                        start = as.Date(c("1985-01-01","1990-01-01","1995-01-01")),
+                        
+                        end = as.Date(c("1989-12-31","1994-12-31","1999-12-31")))
+
+
+dl_years2 <- data.frame(date_index = 1:3,
+                        start = as.Date(c("2000-01-01", "2005-01-01", "2010-01-01")),
+                        
+                        end = as.Date(c("2004-12-31", "2009-12-31","2014-12-31")))
+
+
+dl_years3 <- data.frame(date_index = 1:3,
+                        start = as.Date(c("2015-01-01","2020-01-01","2021-01-01")),
+                        
+                        end = as.Date(c("2019-12-31","2020-12-31","2023-06-20")))
+
+
+###download and save data
+
+
+base::system.time(
+  OISST_DF1 <- dl_years1 %>% 
+    dplyr::group_by(date_index) %>% 
+    dplyr::group_modify(~OISST_sub_dl(.x)) %>% 
+    dplyr::ungroup() %>% 
+    dplyr::select(lon, lat, t, temp,sic)
+) 
+
+
+base::system.time(
+  OISST_DF2 <- dl_years2 %>% 
+    dplyr::group_by(date_index) %>% 
+    dplyr::group_modify(~OISST_sub_dl(.x)) %>% 
+    dplyr::ungroup() %>% 
+    dplyr::select(lon, lat, t, temp,sic)
+)
+
+
+base::system.time(
+  OISST_DF3 <- dl_years3 %>% 
+    dplyr::group_by(date_index) %>% 
+    dplyr::group_modify(~OISST_sub_dl(.x)) %>% 
+    dplyr::ungroup() %>% 
+    dplyr::select(lon, lat, t, temp,sic)
+)
+
+base::saveRDS(OISST_DF1, file = "OISST_SMYL1.Rds")
+base::saveRDS(OISST_DF2, file = "OISST_SMYL2.Rds")
+base::saveRDS(OISST_DF3, file = "OISST_SMYL3.Rds")
+
+### summarize data per day
+
+DF1<-plyr::ddply(OISST_DF1, c("t"), summarise,
+            tSD=sd(temp),tMax=max(temp),
+            tMin=min(temp),temp=mean(temp),
+            sicMean=mean(sic),sicMax=max(sic),
+            sicMin=min(sic),sicSD=sd(sic))
+
+DF2<-plyr::ddply(OISST_DF2, c("t"), summarise,
+            tSD=sd(temp),tMax=max(temp),
+            tMin=min(temp),temp=mean(temp),
+            sicMean=mean(sic),sicMax=max(sic),
+            sicMin=min(sic),sicSD=sd(sic))
+
+DF3<-plyr::ddply(OISST_DF3, c("t"), summarise,
+            tSD=sd(temp),tMax=max(temp),
+            tMin=min(temp),temp=mean(temp),
+            sicMean=mean(sic),sicMax=max(sic),
+            sicMin=min(sic),sicSD=sd(sic))
+
+### merge data
+
+DF12<-rbind(DF1,DF2)
+DF123<-rbind(DF12,DF3)
+
+base::saveRDS(DF123, file = "Smyley_Island.Rds")
+
+#remove data and release unused memory
+
+rm(list=c("OISST_DF1","OISST_DF2","OISST_DF3","OISST_sub_dl","shp","maxmin","bbox_list",
+          "DF1","DF2","DF3","DF12","DF123"))
+
+gc()
+
+
+
+```
+
+#download and process data for Thurston Glacier
+
+```{r, echo=FALSE}
+
+unique(shp.sf$site_id[9])
+
+OISST_sub_dl <- function(time_df){
+  OISST_DATA1 <- rerddap::griddap(datasetx = "ncdcOisst21Agg_LonPM180",
+                                url = "https://coastwatch.pfeg.noaa.gov/erddap/", 
+                                time = c(time_df$start, time_df$end), 
+                                zlev = c(0, 0),
+                                latitude = c(min(df09$ymin),max(df09$ymax)), 
+                                longitude = c(min(df09$xmin),max(df09$xmax)),
+                                fields = c("sst","ice"))$data %>% 
+    dplyr::mutate(time = base::as.Date(stringr::str_remove(time, "T12:00:00Z"))) %>% 
+    dplyr::rename(t = time, temp = sst, sic=ice,lon = longitude, lat = latitude) %>% 
+    dplyr::select(lon, lat, t, temp,sic) %>% 
+    stats::na.omit()
+}
+
+
+
+
+dl_years1 <- data.frame(date_index = 1:3,
+                        start = as.Date(c("1985-01-01","1990-01-01","1995-01-01")),
+                        
+                        end = as.Date(c("1989-12-31","1994-12-31","1999-12-31")))
+
+
+dl_years2 <- data.frame(date_index = 1:3,
+                        start = as.Date(c("2000-01-01", "2005-01-01", "2010-01-01")),
+                        
+                        end = as.Date(c("2004-12-31", "2009-12-31","2014-12-31")))
+
+
+dl_years3 <- data.frame(date_index = 1:3,
+                        start = as.Date(c("2015-01-01","2020-01-01","2021-01-01")),
+                        
+                        end = as.Date(c("2019-12-31","2020-12-31","2023-06-20")))
+
+
+###download and save data
+
+
+base::system.time(
+  OISST_DF1 <- dl_years1 %>% 
+    dplyr::group_by(date_index) %>% 
+    dplyr::group_modify(~OISST_sub_dl(.x)) %>% 
+    dplyr::ungroup() %>% 
+    dplyr::select(lon, lat, t, temp,sic)
+) 
+
+
+base::system.time(
+  OISST_DF2 <- dl_years2 %>% 
+    dplyr::group_by(date_index) %>% 
+    dplyr::group_modify(~OISST_sub_dl(.x)) %>% 
+    dplyr::ungroup() %>% 
+    dplyr::select(lon, lat, t, temp,sic)
+)
+
+
+base::system.time(
+  OISST_DF3 <- dl_years3 %>% 
+    dplyr::group_by(date_index) %>% 
+    dplyr::group_modify(~OISST_sub_dl(.x)) %>% 
+    dplyr::ungroup() %>% 
+    dplyr::select(lon, lat, t, temp,sic)
+)
+
+base::saveRDS(OISST_DF1, file = "OISST_THUR1.Rds")
+base::saveRDS(OISST_DF2, file = "OISST_THUR2.Rds")
+base::saveRDS(OISST_DF3, file = "OISST_THUR3.Rds")
+
+### summarize data per day
+
+DF1<-plyr::ddply(OISST_DF1, c("t"), summarise,
+            tSD=sd(temp),tMax=max(temp),
+            tMin=min(temp),temp=mean(temp),
+            sicMean=mean(sic),sicMax=max(sic),
+            sicMin=min(sic),sicSD=sd(sic))
+
+DF2<-plyr::ddply(OISST_DF2, c("t"), summarise,
+            tSD=sd(temp),tMax=max(temp),
+            tMin=min(temp),temp=mean(temp),
+            sicMean=mean(sic),sicMax=max(sic),
+            sicMin=min(sic),sicSD=sd(sic))
+
+DF3<-plyr::ddply(OISST_DF3, c("t"), summarise,
+            tSD=sd(temp),tMax=max(temp),
+            tMin=min(temp),temp=mean(temp),
+            sicMean=mean(sic),sicMax=max(sic),
+            sicMin=min(sic),sicSD=sd(sic))
+
+### merge data
+
+DF12<-rbind(DF1,DF2)
+DF123<-rbind(DF12,DF3)
+
+base::saveRDS(DF123, file = "Thurston_Glacier.Rds")
+
+#remove data and release unused memory
+
+rm(list=c("OISST_DF1","OISST_DF2","OISST_DF3","OISST_sub_dl","shp","maxmin","bbox_list",
+          "DF1","DF2","DF3","DF12","DF123"))
+
+gc()
+
+
+
+```
+
+
+#download and process data for Verdi Inlet
+
+```{r, echo=FALSE}
+
+unique(shp.sf$site_id[10])
+
+OISST_sub_dl <- function(time_df){
+  OISST_DATA1 <- rerddap::griddap(datasetx = "ncdcOisst21Agg_LonPM180",
+                                url = "https://coastwatch.pfeg.noaa.gov/erddap/", 
+                                time = c(time_df$start, time_df$end), 
+                                zlev = c(0, 0),
+                                latitude = c(min(df10$ymin),max(df10$ymax)), 
+                                longitude = c(min(df10$xmin),max(df10$xmax)),
+                                fields = c("sst","ice"))$data %>% 
+    dplyr::mutate(time = base::as.Date(stringr::str_remove(time, "T12:00:00Z"))) %>% 
+    dplyr::rename(t = time, temp = sst, sic=ice,lon = longitude, lat = latitude) %>% 
+    dplyr::select(lon, lat, t, temp,sic) %>% 
+    stats::na.omit()
+}
+
+
+
+
+dl_years1 <- data.frame(date_index = 1:3,
+                        start = as.Date(c("1985-01-01","1990-01-01","1995-01-01")),
+                        
+                        end = as.Date(c("1989-12-31","1994-12-31","1999-12-31")))
+
+
+dl_years2 <- data.frame(date_index = 1:3,
+                        start = as.Date(c("2000-01-01", "2005-01-01", "2010-01-01")),
+                        
+                        end = as.Date(c("2004-12-31", "2009-12-31","2014-12-31")))
+
+
+dl_years3 <- data.frame(date_index = 1:3,
+                        start = as.Date(c("2015-01-01","2020-01-01","2021-01-01")),
+                        
+                        end = as.Date(c("2019-12-31","2020-12-31","2023-06-20")))
+
+
+###download and save data
+
+
+base::system.time(
+  OISST_DF1 <- dl_years1 %>% 
+    dplyr::group_by(date_index) %>% 
+    dplyr::group_modify(~OISST_sub_dl(.x)) %>% 
+    dplyr::ungroup() %>% 
+    dplyr::select(lon, lat, t, temp,sic)
+) 
+
+
+base::system.time(
+  OISST_DF2 <- dl_years2 %>% 
+    dplyr::group_by(date_index) %>% 
+    dplyr::group_modify(~OISST_sub_dl(.x)) %>% 
+    dplyr::ungroup() %>% 
+    dplyr::select(lon, lat, t, temp,sic)
+)
+
+
+base::system.time(
+  OISST_DF3 <- dl_years3 %>% 
+    dplyr::group_by(date_index) %>% 
+    dplyr::group_modify(~OISST_sub_dl(.x)) %>% 
+    dplyr::ungroup() %>% 
+    dplyr::select(lon, lat, t, temp,sic)
+)
+
+base::saveRDS(OISST_DF1, file = "OISST_VERD1.Rds")
+base::saveRDS(OISST_DF2, file = "OISST_VERD2.Rds")
+base::saveRDS(OISST_DF3, file = "OISST_VERD3.Rds")
+
+### summarize data per day
+
+DF1<-plyr::ddply(OISST_DF1, c("t"), summarise,
+            tSD=sd(temp),tMax=max(temp),
+            tMin=min(temp),temp=mean(temp),
+            sicMean=mean(sic),sicMax=max(sic),
+            sicMin=min(sic),sicSD=sd(sic))
+
+DF2<-plyr::ddply(OISST_DF2, c("t"), summarise,
+            tSD=sd(temp),tMax=max(temp),
+            tMin=min(temp),temp=mean(temp),
+            sicMean=mean(sic),sicMax=max(sic),
+            sicMin=min(sic),sicSD=sd(sic))
+
+DF3<-plyr::ddply(OISST_DF3, c("t"), summarise,
+            tSD=sd(temp),tMax=max(temp),
+            tMin=min(temp),temp=mean(temp),
+            sicMean=mean(sic),sicMax=max(sic),
+            sicMin=min(sic),sicSD=sd(sic))
+
+### merge data
+
+DF12<-rbind(DF1,DF2)
+DF123<-rbind(DF12,DF3)
+
+base::saveRDS(DF123, file = "Verdi_Inlet.Rds")
+
+#remove data and release unused memory
+
+rm(list=c("OISST_DF1","OISST_DF2","OISST_DF3","OISST_sub_dl","shp","maxmin","bbox_list",
+          "DF1","DF2","DF3","DF12","DF123"))
+
+gc()
+
+
+
+```
+
+
+```{r}
+
+bear<-readRDS("Bear_Peninsula.Rds")
+brown<-readRDS("Brownson_Island.Rds")
+bryan<-readRDS("Bryan_Coast.Rds")
+cape<-readRDS("Cape_Gates.Rds")
+novi<-readRDS("Noville_Peninsula.Rds")
+
+pfro<-readRDS("Pfrogner_Point.Rds")
+roth<-readRDS("Rothschild_Island.Rds")
+smyl<-readRDS("Smyley_Island.Rds")
+thur<-readRDS("Thurston_Glacier.Rds")
+verd<-readRDS("Verdi_Inlet.Rds")
+
+
+
+bear$site=c("BEAR")
+brown$site=c("BROW")
+bryan$site=c("BRYA")
+cape$site=c("CAPE")
+novi$site=c("NOVI")
+
+pfro$site=c("PFRO")
+roth$site=c("ROTH")
+smyl$site=c("SMYL")
+thur$site=c("THUR")
+verd$site=c("VERD")
+
+
+all<-rbind(bear,brown,bryan,cape,novi,pfro,roth,smyl,thur,verd)
+
+all$Year<-year(all$t)
+all$quarter<-quarter(all$t)
+all$Season[all$quarter=="1"]<-"JFM"
+all$Season[all$quarter=="2"]<-"AMJ"
+all$Season[all$quarter=="3"]<-"JAS"
+all$Season[all$quarter=="4"]<-"OND"
+
+
+
+allm<-plyr::ddply(all, c("Year","Season","site"), summarise,
+            mean=na.omit(mean(sicMean)),
+            min=na.omit(mean(sicMin)),
+            max=na.omit(mean(sicMax)),
+            sd=na.omit(mean(sicSD)))
+summary(allm)
+
+ggplot(subset(allm,Season=="JFM"), aes(Year,min))+
+  geom_smooth(se=F)+
+    geom_point()+theme_bw()+ggtitle("a. Summer")+ylab("Sea Ice cover")+
+  xlim(2010,2023)+
+
+ggplot(subset(allm,Season=="AMJ"), aes(Year,min))+
+ geom_smooth(se=F)+
+    geom_point()+theme_bw()+ggtitle("b. Autumn")+ylab("Sea Ice cover")+
+   xlim(2010,2023)+
+
+  ggplot(subset(allm,Season=="JAS"), aes(Year,min))+
+ geom_smooth(se=F)+
+    geom_point(method="lm",se=F)+theme_bw()+ggtitle("c. Winter")+ylab("Sea Ice cover")+
+   xlim(2010,2023)+
+
+ggplot(subset(allm,Season=="OND"), aes(Year,min))+
+  geom_smooth(se=F)+
+    geom_point()+theme_bw()+ggtitle("d. Spring")+ylab("Sea Ice cover")+
+   xlim(2010,2023)
+
+
+
+
+``` 
+
+
+
+###----------- calculating marine heatwaves-------------
+
+
+```{r,echo=FALSE}
+
+library(heatwaveR)
+
+
+### calculate thresholds from climatology
+
+
+
+
+# SICMin thresholds
+
+sicMean01 <- ts2clm(data = bear, 
+                     y = sicMean, climatologyPeriod = c("1985-01-01", "2023-05-30"), pctile = 20)
+sicMean02 <- ts2clm(data = brown, 
+                     y = sicMean, climatologyPeriod = c("1986-01-01", "2023-05-30"), pctile = 20)
+sicMean03 <- ts2clm(data = bryan, 
+                     y = sicMean, climatologyPeriod = c("1985-01-01", "2023-05-30"), pctile = 20)
+
+sicMean04 <- ts2clm(data = cape, 
+                     y = sicMean, climatologyPeriod = c("1985-01-01", "2023-05-30"), pctile = 20)
+sicMean05 <- ts2clm(data = novi, 
+                     y = sicMean, climatologyPeriod = c("1985-01-01", "2023-05-30"), pctile = 20)
+sicMean06 <- ts2clm(data = pfro, 
+                     y = sicMean, climatologyPeriod = c("1985-01-01", "2023-05-30"), pctile = 20)
+
+sicMean07 <- ts2clm(data = roth, 
+                     y = sicMean, climatologyPeriod = c("1985-01-01", "2023-05-30"), pctile = 20)
+
+sicMean08 <- ts2clm(data = smyl, 
+                     y = sicMean, climatologyPeriod = c("1985-01-01", "2023-05-30"), pctile = 20)
+sicMean09 <- ts2clm(data = thur, 
+                     y = sicMean, climatologyPeriod = c("1985-01-01", "2023-05-30"), pctile = 20)
+sicMean10 <- ts2clm(data = verd, 
+                     y = sicMean, climatologyPeriod = c("1985-01-01", "2023-05-30"), pctile = 20)
+
+
+
+#DETECT alldfS
+
+
+sic01 <- detect_event(data = sicMean01, y = sicMean,minDuration = 3,maxGap = 7,coldSpells = T) 
+sic02 <- detect_event(data = sicMean02, y = sicMean,minDuration = 3,maxGap = 7,coldSpells = T) 
+sic03 <- detect_event(data = sicMean03, y = sicMean,minDuration = 3,maxGap = 7,coldSpells = T) 
+sic04 <- detect_event(data = sicMean04, y = sicMean,minDuration = 3,maxGap = 7,coldSpells = T) 
+sic05 <- detect_event(data = sicMean05, y = sicMean,minDuration = 3,maxGap = 7,coldSpells = T) 
+sic06 <- detect_event(data = sicMean06, y = sicMean,minDuration = 3,maxGap = 7,coldSpells = T) 
+sic07 <- detect_event(data = sicMean07, y = sicMean,minDuration = 3,maxGap = 7,coldSpells = T) 
+sic08 <- detect_event(data = sicMean08, y = sicMean,minDuration = 3,maxGap = 7,coldSpells = T) 
+sic09 <- detect_event(data = sicMean09, y = sicMean,minDuration = 3,maxGap = 7,coldSpells = T) 
+sic10 <- detect_event(data = sicMean10, y = sicMean,minDuration = 3,maxGap = 7,coldSpells = T) 
+
+
+summary(shpdf$site_id)
+
+sites<-shpdf[1:5]
+
+sdf01<-data.frame(sic01$climatology,site_id=c("BEAR")) 
+sdf02<-data.frame(sic02$climatology,site_id=c("BSON")) 
+sdf03<-data.frame(sic03$climatology,site_id=c("BRYA")) 
+sdf04<-data.frame(sic04$climatology,site_id=c("GATE")) 
+sdf05<-data.frame(sic05$climatology,site_id=c("NOVI")) 
+
+sdf06<-data.frame(sic06$climatology,site_id=c("PFRO")) 
+sdf07<-data.frame(sic07$climatology,site_id=c("ROTS")) 
+sdf08<-data.frame(sic08$climatology,site_id=c("SMYL")) 
+sdf09<-data.frame(sic09$climatology,site_id=c("THUR")) 
+sdf10<-data.frame(sic10$climatology,site_id=c("VERD")) 
+
+
+
+clim<-rbind(sdf01,sdf02,sdf03,sdf04,sdf05,
+              sdf06,sdf07,sdf08,sdf09,sdf10)
+
+
+climS<-merge(clim,sites,by="site_id")
+
+
+# Set category fill colours
+fillColCat2 <- c(
+  "Moderate" = "#ffc866",
+  "Normal" = "#85B7CC"
+  )
+
+lineColCat2 <- c(
+  "Sea Ice" = "black",
+  "Climatology" = "blue3",
+  "Threshold" = "red3"
+  )
+
+climS$diff = climS$thresh - climS$seas
+climS$thresh_2x = climS$thresh + climS$diff
+climS$thresh_3x = climS$thresh_2x + climS$diff
+climS$thresh_4x = climS$thresh_3x + climS$diff
+
+sites$site_name
+
+climS$site_id<-factor(climS$site_id,levels=c("ROTS","VERD","SMYL","BRYA","PFRO","NOVI",
+                                             "BSON","BEAR","GATE","THUR"))
+
+
+climS$site_name<-factor(climS$site_name,levels=c("Rothschild Island","Verdi Inlet",
+                                             "Smyley","Bryan Coast","Pfrogner Point",
+                                             "Noville Peninsula", "Brownson Islands",
+                                             "Bear Peninsula","Cape Gates",
+                                             "Thurston Glacier, Mount Siple"))
+
+
+(ggplot(data = subset(climS,t>'2021-12-31'), aes(x = t, y = sicMean)) +
+     geom_flame(aes(y = sicMean,y2=thresh, fill = "Normal")) +
+     geom_flame(aes(y = thresh,y2=sicMean, fill = "Moderate")) +
+     geom_line(aes(y = seas, col = "Climatology"), size = 0.7,linetype="dashed") +
+     geom_line(aes(y = thresh, col = "Threshold"), size = 0.7,linetype="dotdash") +
+     geom_line(aes(y = sicMean, col = "Sea Ice"), size = 0.6) +
+     scale_colour_manual(name = NULL, values = lineColCat2,
+                         breaks = c("Sea Ice", "Climatology","Threshold")) +
+     scale_fill_manual(name = NULL, values = fillColCat2, guide = FALSE) +
+     scale_x_date(date_labels = "%b %Y") +
+     guides(colour = guide_legend(override.aes = list(linetype = c("solid","dashed",
+                                                                   "dotdash")))) +
+     labs(y = "Sea ice cover [fraction]", x = NULL)+
+     facet_wrap(site_name~.,ncol=2,nrow=5)+theme_bw()+theme(panel.spacing.x = unit(2, "lines")))
+
+
+
+### events duration
+
+edf01<-data.frame(sic01$event,site_id=c("BEAR")) 
+edf02<-data.frame(sic02$event,site_id=c("BSON")) 
+edf03<-data.frame(sic03$event,site_id=c("BRYA")) 
+edf04<-data.frame(sic04$event,site_id=c("GATE")) 
+edf05<-data.frame(sic05$event,site_id=c("NOVI")) 
+
+edf06<-data.frame(sic06$event,site_id=c("PFRO")) 
+edf07<-data.frame(sic07$event,site_id=c("ROTS")) 
+edf08<-data.frame(sic08$event,site_id=c("SMYL")) 
+edf09<-data.frame(sic09$event,site_id=c("THUR")) 
+edf10<-data.frame(sic10$event,site_id=c("VERD")) 
+
+
+events<-rbind(edf01,edf02,edf03,edf04,edf05,
+              edf06,edf07,edf08,edf09,edf10)
+
+
+eveS<-merge(events,sites,by="site_id")
+
+
+eveS<-subset(eveS,date_start>'2022-01-01')
+eveS$Year<-year(eveS$date_start)
+eveS$quarter<-quarter(eveS$date_start)
+eveS$Season[eveS$quarter=="1"]<-"JFM"
+eveS$Season[eveS$quarter=="2"]<-"AMJ"
+eveS$Season[eveS$quarter=="3"]<-"JAS"
+eveS$Season[eveS$quarter=="4"]<-"OND"
+
+eveS$Season<-factor(eveS$Season,levels=c("JFM","AMJ","JAS","OND"))
+
+
+#events plot
+
+
+
+(ggplot(subset(eveS,site_id=="ROTS" | site_id=="VERD"|site_id=="SMYL"),
+       aes(date_start,duration,colour=Season,linetype=Season))+
+  geom_hline(yintercept=15,linetype="dotted",colour="grey50")+
+  geom_lolli()+
+  geom_text(aes(label=site_id), hjust=0, vjust=-1)+
+  theme_bw()+ylab("Duration (days)")+xlab("Date start")+
+  scale_colour_manual(values=c("red","green4","blue","orange"))+
+  ggtitle(label="a.Bellingshausen Sea East of 80°W"))/
+
+(ggplot(subset(eveS,site_id=="BRYA" | site_id=="PFRO"|site_id=="NOVI"),
+       aes(date_start,duration,colour=Season,linetype=Season))+
+  geom_hline(yintercept=15,linetype="dotted",colour="grey50")+
+  geom_lolli()+
+  geom_text(aes(label=site_id), hjust=0, vjust=-1)+
+  theme_bw()+ylab("Duration (days)")+xlab("Date start")+
+  scale_colour_manual(values=c("red","blue","orange"))+
+  ggtitle(label="b.Bellingshausen Sea West of 80°W"))/
+
+
+(ggplot(subset(eveS,site_id=="GATE" | site_id=="THUR"|site_id=="BSON"),
+       aes(date_start,duration,colour=Season,linetype=Season))+
+  geom_hline(yintercept=15,linetype="dotted",colour="grey50")+
+  geom_lolli()+
+  geom_text(aes(label=site_id), hjust=0, vjust=-1)+
+  theme_bw()+ylab("Duration (days)")+xlab("Date start")+
+  scale_colour_manual(values=c("red","green4","orange"))+
+  ggtitle(label="c.Amundsen Sea")
+)
+```
+
+
+#The end
